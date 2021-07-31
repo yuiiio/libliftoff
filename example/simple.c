@@ -78,7 +78,17 @@ int main(int argc, char *argv[])
 	size_t i;
 	uint32_t flags;
 
-	drm_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+	const char *card;
+
+	if (argc > 1)
+		card = argv[1];
+	else
+		card = "/dev/dri/card0";
+
+	fprintf(stderr, "using card '%s'\n", card);
+
+
+	drm_fd = open(card, O_RDWR | O_CLOEXEC);
 	if (drm_fd < 0) {
 		perror("open");
 		return 1;
