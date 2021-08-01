@@ -341,6 +341,38 @@ static int modeset_prepare(int fd, drmModeRes *res)
 	return 0;
 }
 
+static void modeset_cleanup(int fd)
+{
+	struct modeset_dev *iter;
+	struct drm_mode_destroy_dumb dreq;
+
+	while (modeset_list) {
+		/* remove from global list */
+		iter = modeset_list;
+		modeset_list = iter->next;
+
+		/* restore saved CRTC configuration */
+		drmModeSetCrtc(fd,
+			       iter->saved_crtc->crtc_id,
+			       iter->saved_crtc->buffer_id,
+			       iter->saved_crtc->x,
+			       iter->saved_crtc->y,
+			       &iter->conn,
+			       1,
+			       &iter->saved_crtc->mode);
+		drmModeFreeCrtc(iter->saved_crtc);
+
+		munmap(iter->map, iter->size);
+		drmModeRmFB(fd, iter->fb);
+
+		memset(&dreq, 0, sizeof(dreq));
+		dreq.handle = iter->handle;
+		drmIoctl(fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
+
+		free(iter);
+	}
+}
+
 int main(int argc, char *argv[])
 {
 	int drm_fd;
@@ -403,6 +435,26 @@ int main(int argc, char *argv[])
 				iter->conn);
 	}
 
+	// setup twice solved valid issue.
+	modeset_cleanup(drm_fd);
+
+	ret = modeset_prepare(drm_fd, drm_res);
+	if (ret)
+	{
+		close(drm_fd);
+		return ret;
+	}
+
+	/* perform actual modesetting on each found connector+CRTC */
+	for (iter = modeset_list; iter; iter = iter->next) {
+		iter->saved_crtc = drmModeGetCrtc(drm_fd, iter->crtc);
+		ret = drmModeSetCrtc(drm_fd, iter->crtc, iter->fb, 0, 0,
+				     &iter->conn, 1, &iter->mode);
+		if (ret)
+			fprintf(stderr, "cannot set CRTC for connector %u\n",
+				iter->conn);
+	}
+
 	crtc = modeset_list->saved_crtc; //use first one
 
 	if (crtc == NULL || !crtc->mode_valid) {
@@ -413,7 +465,6 @@ int main(int argc, char *argv[])
 	disable_all_crtcs_except(drm_fd, drm_res, crtc->crtc_id);
 	output = liftoff_output_create(device, crtc->crtc_id);
 	drmModeFreeResources(drm_res);
-
 
 	layers[0] = add_layer(drm_fd, output, 0, 0, crtc->mode.hdisplay,
 			      crtc->mode.vdisplay, false);
@@ -457,8 +508,8 @@ int main(int argc, char *argv[])
 		liftoff_layer_destroy(layers[i]);
 	}
 	liftoff_output_destroy(output);
-	drmModeFreeCrtc(crtc);
 	liftoff_device_destroy(device);
+	modeset_cleanup(drm_fd);
 	close(drm_fd);
 	return 0;
 
